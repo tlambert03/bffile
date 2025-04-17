@@ -3,19 +3,20 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import dask.array as da
 import numpy as np
 from ome_types import OME
-from resource_backed_dask_array import (
-    ResourceBackedDaskArray,
-    resource_backed_dask_array,
-)
 from scyjava import jimport
 from typing_extensions import Self
 
 from . import _utils
+from ._java_stuff import redirect_java_logging
+
+if TYPE_CHECKING:
+    from resource_backed_dask_array import ResourceBackedDaskArray
+
 
 # by default, .bfmemo files will go into the same directory as the file.
 # users can override this with BIOFORMATS_MEMO_DIR env var
@@ -82,12 +83,10 @@ class BioFile:
         dask_tiles: bool = False,
         tile_size: tuple[int, int] | None = None,
     ):
-        if options is None:
-            options = {}
-
+        redirect_java_logging()
         ImageReader = jimport("loci.formats.ImageReader")
 
-        self._path = str(path)
+        self._path = str(Path(path).expanduser().absolute())
         self._r = ImageReader()
         if meta:
             self._r.setMetadataStore(self._create_ome_meta())
@@ -149,6 +148,10 @@ class BioFile:
     def core_meta(self) -> _utils.CoreMeta:
         return self._core_meta
 
+    @property
+    def shape(self) -> _utils.OMEShape:
+        return _utils.OMEShape(self._core_meta.series_count, *self._core_meta.shape)
+
     def open(self) -> None:
         """Open file."""
         self._r.setId(self._path)
@@ -191,6 +194,8 @@ class BioFile:
         -------
         ResourceBackedDaskArray
         """
+        from resource_backed_dask_array import resource_backed_dask_array
+
         if series is not None:
             self._r.setSeries(series)
 
@@ -329,12 +334,12 @@ class BioFile:
 
         return im[np.newaxis, np.newaxis, np.newaxis]
 
-    _service: Any = None
+    _service: ClassVar[Any] = None
 
     @classmethod
     def _create_ome_meta(cls) -> Any:
         """Create an OMEXMLMetadata object to populate."""
-        if not cls._service:
+        if cls._service is None:
             ServiceFactory = jimport("loci.common.services.ServiceFactory")
             OMEXMLService = jimport("loci.formats.services.OMEXMLService")
 
@@ -342,3 +347,9 @@ class BioFile:
             cls._service = factory.getInstance(OMEXMLService)
 
         return cls._service.createOMEXMLMetadata()
+
+    @staticmethod
+    def bioformats_version() -> str:
+        """Get the version of Bio-Formats."""
+        Version = jimport("loci.formats.FormatTools")
+        return getattr(Version, "VERSION", "unknown")

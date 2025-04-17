@@ -7,3 +7,9 @@
 [![codecov](https://codecov.io/gh/tlambert03/bffile/branch/main/graph/badge.svg)](https://codecov.io/gh/tlambert03/bffile)
 
 Yet another Bio-Formats wrapper for python
+
+## Installation
+
+```bash
+pip install git+https://github.com/tlambert03/bffile
+```

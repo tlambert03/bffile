@@ -109,3 +109,5 @@ ENV/
 # IDE settings
 .vscode/
 .idea/
+tests/data/
+bioformats/

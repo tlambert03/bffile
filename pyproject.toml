@@ -7,12 +7,6 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 source = "vcs"
 
-# read more about configuring hatch at:
-# https://hatch.pypa.io/latest/config/build/
-[tool.hatch.build.targets.wheel]
-only-include = ["src"]
-sources = ["src"]
-
 # https://peps.python.org/pep-0621/
 [project]
 name = "bffile"
@@ -43,7 +37,10 @@ repository = "https://github.com/tlambert03/bffile"
 dask = ["dask[array]>=2024.8.0", "resource-backed-dask-array>=0.1.0"]
 
 [dependency-groups]
+test = ["pytest>=8.3.5", "pytest-cov>=6.1.1"]
 dev = [
+    { include-group = "test" },
+    "bffile[dask]",
     "ipython>=8.18.1",
     "mypy>=1.15.0",
     "pdbpp>=0.11.6 ; sys_platform != 'win32'",
@@ -52,7 +49,6 @@ dev = [
     "rich>=14.0.0",
     "ruff>=0.11.6",
 ]
-test = ["pytest>=8.3.5", "pytest-cov>=6.1.1"]
 
 # https://docs.astral.sh/ruff
 [tool.ruff]
@@ -64,10 +60,9 @@ src = ["src"]
 [tool.ruff.lint]
 pydocstyle = { convention = "numpy" }
 select = [
-    "E", # style errors
-    "W", # style warnings
-    "F", # flakes
-    # "D",    # pydocstyle
+    "E",    # style errors
+    "W",    # style warnings
+    "F",    # flakes
     "D417", # Missing argument descriptions in Docstrings
     "I",    # isort
     "UP",   # pyupgrade

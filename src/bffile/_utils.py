@@ -32,6 +32,18 @@ class PhysicalPixelSizes(NamedTuple):
         return f"PhysicalPixelSizes(z={self.z}, y={self.y}, x={self.x})"
 
 
+class OMEShape(NamedTuple):
+    """NamedTuple with OME metadata shape."""
+
+    series: int
+    t: int
+    c: int
+    z: int
+    y: int
+    x: int
+    rgb: int
+
+
 class CoreMeta(NamedTuple):
     """NamedTuple with core bioformats metadata. (not OME meta)."""
 
