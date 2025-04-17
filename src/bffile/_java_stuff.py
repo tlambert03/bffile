@@ -1,9 +1,12 @@
 import logging
 import os
 import warnings
+from contextlib import suppress
+from functools import cache
 from typing import Any
 
 import jpype
+import numpy as np
 import scyjava
 import scyjava.config
 
@@ -86,3 +89,34 @@ def redirect_java_logging(logger: logging.Logger | None = None) -> None:
     # add the Python appender
     root.addAppender(proxy)
     _LOGGING_REDIRECTED = True
+
+
+def pixtype2dtype(pixeltype: int, little_endian: bool) -> np.dtype:
+    """Convert a loci.formats PixelType integer into a numpy dtype."""
+    FormatTools = scyjava.jimport("loci.formats.FormatTools")
+
+    fmt2type: dict[int, str] = {
+        FormatTools.INT8: "i1",
+        FormatTools.UINT8: "u1",
+        FormatTools.INT16: "i2",
+        FormatTools.UINT16: "u2",
+        FormatTools.INT32: "i4",
+        FormatTools.UINT32: "u4",
+        FormatTools.FLOAT: "f4",
+        FormatTools.DOUBLE: "f8",
+    }
+    return np.dtype(("<" if little_endian else ">") + fmt2type[pixeltype])
+
+
+@cache
+def hide_memoization_warning() -> None:
+    """HACK: this silences a warning about memoization for now.
+
+    An illegal reflective access operation has occurred
+    https://github.com/ome/bioformats/issues/3659
+    """
+    with suppress(Exception):
+        import jpype
+
+        System = jpype.JPackage("java").lang.System
+        System.err.close()

@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
-from contextlib import suppress
 from copy import deepcopy
-from functools import cache
 from typing import TYPE_CHECKING, Any, NamedTuple
 from xml.etree import ElementTree as ET
 
 import numpy as np
 import numpy.typing as npt
-import scyjava
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -18,7 +15,7 @@ if TYPE_CHECKING:
     from ome_types import OME
 
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("bffile")
 
 
 class PhysicalPixelSizes(NamedTuple):
@@ -570,23 +567,6 @@ def generate_coord_array(
     return np.arange(start, stop) * step_size
 
 
-def pixtype2dtype(pixeltype: int, little_endian: bool) -> np.dtype:
-    """Convert a loci.formats PixelType integer into a numpy dtype."""
-    FormatTools = scyjava.jimport("loci.formats.FormatTools")
-
-    fmt2type: dict[int, str] = {
-        FormatTools.INT8: "i1",
-        FormatTools.UINT8: "u1",
-        FormatTools.INT16: "i2",
-        FormatTools.UINT16: "u2",
-        FormatTools.INT32: "i4",
-        FormatTools.UINT32: "u4",
-        FormatTools.FLOAT: "f4",
-        FormatTools.DOUBLE: "f8",
-    }
-    return np.dtype(("<" if little_endian else ">") + fmt2type[pixeltype])
-
-
 def _chunk_by_tile_size(n_px: int, tile_length: int) -> tuple[int, ...]:
     n_splits = n_px / tile_length
     n_full_tiles = np.floor(n_splits)
@@ -632,17 +612,3 @@ def slice2width(slc: slice, length: int) -> tuple[int, int]:
         start, stop, _ = slc.indices(length)
         return min(start, stop), abs(stop - start)
     return 0, length
-
-
-@cache
-def hide_memoization_warning() -> None:
-    """HACK: this silences a warning about memoization for now.
-
-    An illegal reflective access operation has occurred
-    https://github.com/ome/bioformats/issues/3659
-    """
-    with suppress(Exception):
-        import jpype
-
-        System = jpype.JPackage("java").lang.System
-        System.err.close()

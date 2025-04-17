@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from contextlib import suppress
 import os
+from contextlib import suppress
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -13,7 +13,7 @@ from scyjava import jimport
 from typing_extensions import Self
 
 from . import _utils
-from ._java_stuff import redirect_java_logging
+from ._java_stuff import hide_memoization_warning, pixtype2dtype, redirect_java_logging
 
 if TYPE_CHECKING:
     from resource_backed_dask_array import ResourceBackedDaskArray
@@ -95,7 +95,7 @@ class BioFile:
         # memoize to save time on later re-openings of the same file.
         if memoize > 0:
             Memoizer = jimport("loci.formats.Memoizer")
-            _utils.hide_memoization_warning()
+            hide_memoization_warning()
             if BIOFORMATS_MEMO_DIR is not None:
                 self._r = Memoizer(self._r, memoize, BIOFORMATS_MEMO_DIR)
             else:
@@ -134,7 +134,7 @@ class BioFile:
                 self._r.getSizeX(),
                 self._r.getRGBChannelCount(),
             ),
-            _utils.pixtype2dtype(self._r.getPixelType(), self._r.isLittleEndian()),
+            pixtype2dtype(self._r.getPixelType(), self._r.isLittleEndian()),
             self._r.getSeriesCount(),
             self._r.isRGB(),
             self._r.isInterleaved(),
