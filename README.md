@@ -14,6 +14,11 @@ Yet another Bio-Formats wrapper for python
 pip install git+https://github.com/tlambert03/bffile
 ```
 
+### Install Java ...
+
+This package requires that you have java installed.  
+<INSERT GUIDELINES HERE>
+
 ## Usage
 
 ```python
