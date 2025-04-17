@@ -32,7 +32,8 @@ if (coord := os.getenv("BIOFORMATS_VERSION", None)) is not None:
         MAVEN_COORDINATE = coord
 
 scyjava.config.endpoints.append(MAVEN_COORDINATE)
-scyjava.config.endpoints.append("ch.qos.logback:logback-classic")
+# NB: logback 1.3.x is the last version with Java 8 support!
+scyjava.config.endpoints.append("ch.qos.logback:logback-classic:1.3.15")
 
 # #################################### LOGGING ####################################
 
