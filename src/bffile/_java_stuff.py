@@ -1,12 +1,11 @@
-from functools import cache
+import logging
 import os
-from typing import Any
 import warnings
+from typing import Any
+
+import jpype
 import scyjava
 import scyjava.config
-import logging
-import jpype
-
 
 MAVEN_COORDINATE = "ome:formats-gpl:RELEASE"
 
@@ -23,7 +22,8 @@ if (coord := os.getenv("BIOFORMATS_VERSION", None)) is not None:
         warnings.warn(
             f"Invalid BIOFORMATS_VERSION env var: {coord!r}. "
             "Must be a valid maven coordinate with 2-5 elements. "
-            f"Using default {MAVEN_COORDINATE!r}"
+            f"Using default {MAVEN_COORDINATE!r}",
+            stacklevel=2,
         )
     else:
         MAVEN_COORDINATE = coord
@@ -39,13 +39,13 @@ LOGGER = logging.getLogger("bffile")
 fmt = (
     "%(asctime)s.%(msecs)03d "  # timestamp with milliseconds
     "[%(levelname)-5s] "  # level, padded
-    "%(name)s:%(lineno)d – "  # logger name and line no.
+    "%(name)s:%(lineno)d - "  # logger name and line no.
     "%(message)s"  # the log message
 )
 datefmt = "%Y-%m-%d %H:%M:%S"
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
-# avoid double‑logs if somebody’s already attached handlers
+# avoid double-logs if somebody has already attached handlers
 if not any(isinstance(h, logging.StreamHandler) for h in LOGGER.handlers):
     LOGGER.addHandler(handler)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 import os
 from pathlib import Path
 from threading import Lock
@@ -34,8 +35,6 @@ class BioFile:
     automatically called when using the 'with' context manager.
 
     BioFile instances are not thread-safe.
-
-    Bio-Formats is licensed under GPLv2 and is not included in this package.
 
     Parameters
     ----------
@@ -74,9 +73,9 @@ class BioFile:
     def __init__(
         self,
         path: str | os.PathLike,
+        *,
         series: int = 0,
         meta: bool = True,
-        *,
         original_meta: bool = False,
         memoize: int | bool = 0,
         options: dict[str, bool] | None = None,
@@ -127,7 +126,7 @@ class BioFile:
     def set_series(self, series: int = 0) -> None:
         self._r.setSeries(series)
         self._core_meta = _utils.CoreMeta(
-            (
+            _utils.OMEShape(
                 self._r.getSizeT(),
                 self._r.getEffectiveSizeC(),
                 self._r.getSizeZ(),
@@ -150,7 +149,7 @@ class BioFile:
 
     @property
     def shape(self) -> _utils.OMEShape:
-        return _utils.OMEShape(self._core_meta.series_count, *self._core_meta.shape)
+        return self._core_meta.shape
 
     def open(self) -> None:
         """Open file."""
@@ -159,10 +158,8 @@ class BioFile:
 
     def close(self) -> None:
         """Close file."""
-        try:
+        with suppress(Exception):
             self._r.close()
-        except (AttributeError, ImportError, RuntimeError):
-            pass
 
     def to_numpy(self, series: int | None = None) -> np.ndarray:
         """Create numpy array for the specified or current series.
@@ -176,6 +173,7 @@ class BioFile:
         series : int, optional
             The series index to retrieve, by default None
         """
+        # TODO: make going through dask optional
         return np.asarray(self.to_dask(series))
 
     def to_dask(self, series: int | None = None) -> ResourceBackedDaskArray:
@@ -230,10 +228,9 @@ class BioFile:
     @property
     def ome_xml(self) -> str:
         """Return OME XML string."""
-        with self:
-            store = self._r.getMetadataStore()
-
-            return str(store.dumpXML()) if store else ""
+        if store := self._r.getMetadataStore():
+            return str(store.dumpXML())
+        return ""
 
     @property
     def ome_metadata(self) -> OME:

@@ -13,3 +13,15 @@ Yet another Bio-Formats wrapper for python
 ```bash
 pip install git+https://github.com/tlambert03/bffile
 ```
+
+## Usage
+
+```python
+from bffile import BioFile
+
+with BioFile("tests/data/ND2_dims_p4z5t3c2y32x32.nd2") as bf:
+    print(bf.ome_metadata)  # ome_types.OME object
+    print(bf.shape)  # shows full shape
+    data = bf.to_numpy(series=1)
+    print(data.shape, data.dtype)
+```

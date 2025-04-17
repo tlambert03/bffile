@@ -35,7 +35,6 @@ class PhysicalPixelSizes(NamedTuple):
 class OMEShape(NamedTuple):
     """NamedTuple with OME metadata shape."""
 
-    series: int
     t: int
     c: int
     z: int
@@ -43,11 +42,14 @@ class OMEShape(NamedTuple):
     x: int
     rgb: int
 
+    def __repr__(self) -> str:
+        return f"TCZXYrgb({self.t}, {self.c}, {self.z}, {self.y}, {self.x}, {self.rgb})"
+
 
 class CoreMeta(NamedTuple):
     """NamedTuple with core bioformats metadata. (not OME meta)."""
 
-    shape: tuple[int, int, int, int, int, int]
+    shape: OMEShape
     dtype: np.dtype
     series_count: int
     is_rgb: bool
