@@ -1,4 +1,4 @@
-"""Yet another Bio-Formats wrapper for python"""
+"""Yet another Bio-Formats wrapper for Python."""
 
 from importlib.metadata import PackageNotFoundError, version
 
@@ -6,5 +6,7 @@ try:
     __version__ = version("bffile")
 except PackageNotFoundError:
     __version__ = "uninstalled"
-__author__ = "Talley Lambert"
-__email__ = "talley.lambert@gmail.com"
+
+from ._biofile import BioFile
+
+__all__ = ["BioFile"]

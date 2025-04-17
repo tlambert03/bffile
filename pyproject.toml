@@ -33,23 +33,26 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
-dependencies = []
-
-# https://peps.python.org/pep-0621/#dependencies-optional-dependencies
-[project.optional-dependencies]
-test = ["pytest", "pytest-cov"]
-dev = [
-    "ipython",
-    "mypy",
-    "pdbpp",  # https://github.com/pdbpp/pdbpp
-    "pre-commit",
-    "rich",  # https://github.com/Textualize/rich
-    "ruff",
-]
+dependencies = ["numpy>=2.0.2", "ome-types>=0.6.1", "scyjava>=1.10.2"]
 
 [project.urls]
 homepage = "https://github.com/tlambert03/bffile"
 repository = "https://github.com/tlambert03/bffile"
+
+[project.optional-dependencies]
+dask = ["dask[array]>=2024.8.0", "resource-backed-dask-array>=0.1.0"]
+
+[dependency-groups]
+dev = [
+    "ipython>=8.18.1",
+    "mypy>=1.15.0",
+    "pdbpp>=0.11.6 ; sys_platform != 'win32'",
+    "pre-commit>=4.2.0",
+    "pyright>=1.1.399",
+    "rich>=14.0.0",
+    "ruff>=0.11.6",
+]
+test = ["pytest>=8.3.5", "pytest-cov>=6.1.1"]
 
 # https://docs.astral.sh/ruff
 [tool.ruff]
@@ -61,10 +64,10 @@ src = ["src"]
 [tool.ruff.lint]
 pydocstyle = { convention = "numpy" }
 select = [
-    "E",    # style errors
-    "W",    # style warnings
-    "F",    # flakes
-    "D",    # pydocstyle
+    "E", # style errors
+    "W", # style warnings
+    "F", # flakes
+    # "D",    # pydocstyle
     "D417", # Missing argument descriptions in Docstrings
     "I",    # isort
     "UP",   # pyupgrade
@@ -72,7 +75,7 @@ select = [
     "B",    # flake8-bugbear
     "A001", # flake8-builtins
     "RUF",  # ruff-specific rules
-    "TCH",  # flake8-type-checking
+    "TC",   # flake8-type-checking
     "TID",  # flake8-tidy-imports
 ]
 ignore = [
@@ -85,7 +88,7 @@ ignore = [
 # https://docs.astral.sh/ruff/formatter/
 [tool.ruff.format]
 docstring-code-format = true
-skip-magic-trailing-comma = false  # default is false
+skip-magic-trailing-comma = false # default is false
 
 # https://mypy.readthedocs.io/en/stable/config_file.html
 [tool.mypy]
@@ -119,8 +122,7 @@ exclude_lines = [
 source = ["bffile"]
 
 [tool.check-manifest]
-ignore = [
-    ".pre-commit-config.yaml",
-    ".ruff_cache/**/*",
-    "tests/**/*",
-]
+ignore = [".pre-commit-config.yaml", ".ruff_cache/**/*", "tests/**/*"]
+
+[tool.typos.default]
+extend-ignore-identifiers-re = ["(?i)nd2?.*", "(?i)ome", "AIMD"]
