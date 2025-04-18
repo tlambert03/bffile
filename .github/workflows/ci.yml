@@ -35,7 +35,6 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ matrix.java-version }}
-          cache: maven
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
