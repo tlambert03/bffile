@@ -1,14 +1,11 @@
-from pathlib import Path
-from re import U
-import pytest
 import shutil
 import sys
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
 import requests
-
 
 URL = "https://www.dropbox.com/scl/fi/d3ape29urgt15iaue73om/bioformats_test_data.zip?rlkey=3j0bl9ef0rolb2k7pydr3jvw7&st=ylf7g4oh&dl=1"
 TEST_DATA = Path(__file__).parent / "data"
