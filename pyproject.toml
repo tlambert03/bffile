@@ -42,10 +42,9 @@ repository = "https://github.com/tlambert03/bffile"
 [project.optional-dependencies]
 
 [dependency-groups]
-test = ["pytest>=8.3.5", "pytest-cov>=6.1.1"]
+test = ["pytest>=8.3.5", "pytest-cov>=6.1.1", "requests>=2.32.3"]
 dev = [
     { include-group = "test" },
-    "bffile[dask]",
     "ipython>=8.18.1",
     "mypy>=1.15.0",
     "pdbpp>=0.11.6 ; sys_platform != 'win32'",
