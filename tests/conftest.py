@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from io import BytesIO
@@ -58,3 +59,12 @@ def test_file(request: pytest.FixtureRequest) -> Path:
         pytest.skip(f"Skipping {filename.suffix} files")
 
     return filename
+
+
+def pytest_sessionstart() -> None:
+    # https://jpype.readthedocs.io/en/latest/userguide.html#errors-reported-by-python-fault-handler
+    if os.name == "nt":
+        import faulthandler
+
+        faulthandler.enable()
+        faulthandler.disable()
