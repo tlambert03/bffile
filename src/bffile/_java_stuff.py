@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 import warnings
@@ -62,7 +64,7 @@ def redirect_java_logging(logger: logging.Logger | None = None) -> None:
     if _LOGGING_REDIRECTED:
         return
 
-    scyjava.start_jvm()
+    scyjava.start_jvm()  # won't start if already running
 
     _logger = logger or LOGGER
 
