@@ -56,6 +56,7 @@ dev = [
 test = [
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "requests" },
 ]
 
 [package.metadata]
@@ -83,6 +84,7 @@ dev = [
 test = [
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-cov", specifier = ">=6.1.1" },
+    { name = "requests", specifier = ">=2.32.3" },
 ]
 
 [[package]]
