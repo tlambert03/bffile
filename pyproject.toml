@@ -29,10 +29,11 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=2.0.2",
-    "ome-types>=0.6.1",
+    "ome-types[pint,lxml]>=0.6.1",
     "scyjava>=1.10.2",
     "dask[array]>=2024.8.0",
     "resource-backed-dask-array>=0.1.0",
+    "cjdk>=0.3.0",
 ]
 
 [project.urls]
@@ -52,6 +53,8 @@ dev = [
     "pyright>=1.1.399",
     "rich>=14.0.0",
     "ruff>=0.11.6",
+    "ome-formats-gpl-stubs",
+    "types-requests>=2.32.0.20250328",
 ]
 
 # https://docs.astral.sh/ruff
@@ -91,6 +94,7 @@ skip-magic-trailing-comma = false # default is false
 
 # https://mypy.readthedocs.io/en/stable/config_file.html
 [tool.mypy]
+mypy_path = "$MYPY_CONFIG_FILE_DIR/stubs"
 files = "src/**/"
 strict = true
 disallow_any_generics = false
@@ -98,11 +102,23 @@ disallow_subclassing_any = false
 show_error_codes = true
 pretty = true
 
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.9"
+enableExperimentalFeatures = true
+verboseOutput = true
+venv = ".venv"
+reportMissingModuleSource = "none"
+
 # https://docs.pytest.org/
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    "ignore:Failing to pass a value to the 'type_params' parameter",
+    "ignore:Failed to retrieve OME XML:RuntimeWarning",
+]
 
 # https://coverage.readthedocs.io/
 [tool.coverage.report]
@@ -125,3 +141,6 @@ ignore = [".pre-commit-config.yaml", ".ruff_cache/**/*", "tests/**/*"]
 
 [tool.typos.default]
 extend-ignore-identifiers-re = ["(?i)nd2?.*", "(?i)ome", "AIMD"]
+
+[tool.uv.sources]
+ome-formats-gpl-stubs = { git = "https://github.com/tlambert03/scyjava-stubs", subdirectory = "packages/ome-formats-gpl-stubs" }
