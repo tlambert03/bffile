@@ -23,16 +23,11 @@ jobs:
         java-version: ["11"]
         include:
           - os: ubuntu-latest
-            python-version: "3.9"
-            java-version: "8"
-          - os: ubuntu-latest
             python-version: "3.11"
             java-version: "21"
-          - os: windows-latest
-            python-version: "3.10"
-            java-version: "8"
-    env:
-      UV_FROZEN: "1"
+          # - os: windows-latest
+          #   python-version: "3.10"
+          #   java-version: "8"
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
@@ -48,30 +43,33 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  deploy:
-    name: Deploy
+  build-and-inspect-package:
+    name: Build & inspect package.
     needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: hynek/build-and-inspect-python-package@v2
+
+  upload-to-pypi:
+    name: Upload package to PyPI
+    needs: build-and-inspect-package
     if: success() && startsWith(github.ref, 'refs/tags/') && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: write
+
     steps:
-      - uses: actions/checkout@v6
+      - name: Download built artifact to dist/
+        uses: actions/download-artifact@v6
         with:
-          fetch-depth: 0
-
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.x"
-
-      - name: 👷 Build
-        run: pipx run build
-
+          name: Packages
+          path: dist
       - name: 🚢 Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
