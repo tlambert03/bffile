@@ -50,3 +50,9 @@ export BFF_JAVA_VENDOR=temurin
 
 Available vendors: `zulu-jre`, `zulu`, `adoptium`, `temurin`, and
 [other vendors listed in cjdk](https://github.com/cachedjdk/cjdk)
+
+#### Java 8 Support
+
+Bffile is not currently tested with Java 8, there are some known issues with
+casting to numpy.  If you do want to try with Java 8, you will minimally need to
+explicitly pin `jpype<1.6`.
