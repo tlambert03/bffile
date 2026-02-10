@@ -16,15 +16,17 @@ import numpy as np
 from ome_types import OME
 from typing_extensions import Self
 
-from bffile._core_metadata import CoreMetadata, OMEShape
+from bffile._core_metadata import CoreMetadata
 
 from . import _utils
 from ._jimports import jimport
 
 if TYPE_CHECKING:
+    import dask.array
     import java.lang
     from loci.formats import IFormatReader
-    from resource_backed_dask_array import ResourceBackedDaskArray
+
+    from bffile._lazy_array import LazyBioArray
 
 
 @dataclass(frozen=True)
@@ -74,62 +76,39 @@ class BioFile:
     Parameters
     ----------
     path : str or Path
-        path to file
-    series : int, optional
-        the image series to read, by default 0
+        Path to file
     meta : bool, optional
-        whether to get metadata as well, by default True
+        Whether to get metadata as well, by default True
     original_meta : bool, optional
-        whether to also retrieve the proprietary metadata as structured annotations in
+        Whether to also retrieve the proprietary metadata as structured annotations in
         the OME output, by default False
     memoize : bool or int, optional
-        threshold (in milliseconds) for memoizing the reader. If the the time
+        Threshold (in milliseconds) for memoizing the reader. If the time
         required to call `reader.setId()` is larger than this number, the initialized
         reader (including all reader wrappers) will be cached in a memo file, reducing
-        time to load the file on future reads.  By default, this results in a hidden
+        time to load the file on future reads. By default, this results in a hidden
         `.bfmemo` file in the same directory as the file. The `BIOFORMATS_MEMO_DIR`
         environment can be used to change the memo file directory.
-        Set `memoize` to greater than 0 to turn on memoization. by default it's off.
+        Set `memoize` to greater than 0 to turn on memoization, by default it's off.
         https://downloads.openmicroscopy.org/bio-formats/latest/api/loci/formats/Memoizer.html
-    options : Dict[str, bool], optional
+    options : dict[str, bool], optional
         A mapping of option-name -> bool specifying additional reader-specific options.
-        see: https://docs.openmicroscopy.org/bio-formats/latest/formats/options.html
+        See: https://docs.openmicroscopy.org/bio-formats/latest/formats/options.html
         For example: to turn off chunkmap table reading for ND2 files, use
         `options={"nativend2.chunkmap": False}`
-    dask_tiles: bool, optional
-        Whether to chunk the bioformats dask array by tiles to easily read sub-regions
-        with numpy-like array indexing
-        Defaults to false and images are read by entire planes
-    tile_size: Optional[Tuple[int, int]]
-        Tuple that sets the tile size of y and x axis, respectively
-        By default, it will use optimal values computed by bioformats itself
     """
 
     def __init__(
         self,
         path: str | os.PathLike,
         *,
-        series: int = 0,
         meta: bool = True,
         original_meta: bool = False,
         memoize: int | bool = 0,
         options: dict[str, bool] | None = None,
-        dask_tiles: bool = False,
-        tile_size: tuple[int, int] | None = None,
     ):
         self._path = str(Path(path).expanduser().absolute())
-        self._current_scene_index = series
         self._lock = RLock()
-        self.dask_tiles = dask_tiles
-
-        if tile_size is not None:
-            if len(tile_size) != 2:
-                raise ValueError(f"tile_size must be length 2, got {len(tile_size)}")
-            if not all(isinstance(x, int) for x in tile_size):
-                raise ValueError(f"tile_size must be integers, got {tile_size}")
-            tile_size = tuple(tile_size)  # type: ignore[assignment]
-
-        self._tile_size_override = tile_size
         self._meta = meta
         self._original_meta = original_meta
         self._memoize = memoize
@@ -137,27 +116,9 @@ class BioFile:
 
         # Reader and finalizer created in open()
         self._java_reader: IFormatReader | None = None
-        self._core_meta_list: list[CoreMetadata] | None = None
+        # 2D structure: list[series][resolution]
+        self._core_meta_list: list[list[CoreMetadata]] | None = None
         self._finalizer: weakref.finalize | None = None
-
-    def set_series(self, series: int = 0) -> None:
-        """Set the current image series.
-
-        Parameters
-        ----------
-        series : int
-            Series index to select
-
-        Raises
-        ------
-        RuntimeError
-            If file is not open
-        """
-        with self._lock:
-            if self.closed:
-                raise RuntimeError("Cannot set series on closed file")
-            self.java_reader().setSeries(series)
-            self._current_scene_index = series
 
     def java_reader(self) -> IFormatReader:
         """Return the native reader object.
@@ -167,32 +128,72 @@ class BioFile:
         RuntimeError
             If file is not open
         """
-        if self.closed:  # Uses finalizer.alive under the hood
+        if self._java_reader is None:
             raise RuntimeError("File not open - call open() first")
-        if self._java_reader is None:  # Should never happen, but type safety
-            raise RuntimeError("Internal error: reader not initialized")
         return self._java_reader
 
-    @property
-    def core_meta(self) -> CoreMetadata:
-        """Get metadata for current series.
+    def _get_core_metadata(self, reader: IFormatReader) -> list[list[CoreMetadata]]:
+        """Parse flat CoreMetadata list into 2D structure.
+
+        Bio-Formats returns metadata as a flat list where entries are organized
+        as: [series0_res0, series0_res1, ..., series1_res0, series1_res1, ...].
+        The first entry of each series has resolution_count set to indicate how
+        many resolution levels that series has.
+        """
+        # Cache metadata in 2D structure: list[series][resolution]
+        # Bio-Formats returns a flat list where the first entry of each
+        # series has resolutionCount set. We parse this into 2D.
+        flat_list = [CoreMetadata.from_java(x) for x in reader.getCoreMetadataList()]
+
+        result: list[list[CoreMetadata]] = []
+        i = 0
+        while i < len(flat_list):
+            resolution_count = flat_list[i].resolution_count
+            result.append(flat_list[i : i + resolution_count])
+            i += resolution_count
+        return result
+
+    def core_meta(self, series: int = 0, resolution: int = 0) -> CoreMetadata:
+        """Get metadata for specified series and resolution.
+
+        Parameters
+        ----------
+        series : int, optional
+            Series index, by default 0
+        resolution : int, optional
+            Resolution level (0 = full resolution), by default 0
+
+        Returns
+        -------
+        CoreMetadata
+            Metadata for the specified series and resolution
 
         Raises
         ------
         RuntimeError
             If file is not open
+        IndexError
+            If series or resolution index is out of bounds
+
+        Notes
+        -----
+        Resolution support is included for future compatibility, but currently
+        only resolution 0 (full resolution) is exposed in the public API.
         """
         if self._core_meta_list is None:
             raise RuntimeError("File not open - call open() first")
-        return self._core_meta_list[self._current_scene_index]
-
-    @property
-    def shape(self) -> OMEShape:
-        return self.core_meta.shape
-
-    @property
-    def dtype(self) -> np.dtype:
-        return self.core_meta.dtype
+        if series < 0 or series >= len(self._core_meta_list):
+            raise IndexError(
+                f"Series index {series} out of range "
+                f"(file has {len(self._core_meta_list)} series)"
+            )
+        if resolution < 0 or resolution >= len(self._core_meta_list[series]):
+            raise IndexError(
+                f"Resolution index {resolution} out of range "
+                f"(series {series} has {len(self._core_meta_list[series])} "
+                f"resolution levels)"
+            )
+        return self._core_meta_list[series][resolution]
 
     def open(self) -> None:
         """Open file and initialize reader.
@@ -206,65 +207,42 @@ class BioFile:
                 return
 
             # Create reader
-            self._java_reader = jimport("loci.formats.ImageReader")()
+            self._java_reader = reader = jimport("loci.formats.ImageReader")()
+
+            # Use non-flattened resolution mode for cleaner API
+            # This allows us to use setSeries(s) + setResolution(r) instead of
+            # treating each resolution as a separate series
+            reader.setFlattenedResolutions(False)
 
             # Wrap with Memoizer if requested
             # Note: Memoizer MUST wrap before setMetadataStore
             if self._memoize > 0:
                 Memoizer = jimport("loci.formats.Memoizer")
                 if BIOFORMATS_MEMO_DIR is not None:
-                    self._java_reader = Memoizer(
-                        self._java_reader, self._memoize, BIOFORMATS_MEMO_DIR
-                    )
+                    reader = Memoizer(reader, self._memoize, BIOFORMATS_MEMO_DIR)
                 else:
-                    self._java_reader = Memoizer(self._java_reader, self._memoize)
+                    reader = Memoizer(reader, self._memoize)
 
             # Configure reader
             if self._meta:
-                self._java_reader.setMetadataStore(self._create_ome_meta())
+                reader.setMetadataStore(self._create_ome_meta())
             if self._original_meta:
-                self._java_reader.setOriginalMetadataPopulated(True)
+                reader.setOriginalMetadataPopulated(True)
 
             if self._options:
-                DynamicMetadataOptions = jimport(
-                    "loci.formats.in_.DynamicMetadataOptions"
-                )
-                mo = DynamicMetadataOptions()
+                mo = jimport("loci.formats.in_.DynamicMetadataOptions")()
                 for name, value in self._options.items():
                     mo.set(name, str(value))
-                self._java_reader.setMetadataOptions(mo)
+                reader.setMetadataOptions(mo)
 
             # Open file - this is the critical operation that can fail
             try:
-                self._java_reader.setId(self._path)
-
-                # Cache metadata
-                self._core_meta_list = [
-                    CoreMetadata.from_java(x)
-                    for x in self._java_reader.getCoreMetadataList()
-                ]
-
-                # Set the series specified in __init__
-                # Note: set_series() acquires lock, but we already have it
-                # So we call the Java method directly here
-                self._java_reader.setSeries(self._current_scene_index)
-
-                # Setup tile size if needed
-                if self.dask_tiles:
-                    if self._tile_size_override is None:
-                        self.tile_size: tuple[int, int] = (
-                            self._java_reader.getOptimalTileHeight(),
-                            self._java_reader.getOptimalTileWidth(),
-                        )
-                    else:
-                        self.tile_size = self._tile_size_override
-
+                reader.setId(self._path)
+                self._core_meta_list = self._get_core_metadata(reader)
                 # The finalizer's alive state is now the source of truth for open/closed
-                self._finalizer = weakref.finalize(
-                    self, _close_java_reader, self._java_reader
-                )
+                self._finalizer = weakref.finalize(self, _close_java_reader, reader)
 
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.close()
                 raise
 
@@ -284,88 +262,158 @@ class BioFile:
             self._java_reader = None
             self._core_meta_list = None
 
-    def to_numpy(self, series: int | None = None) -> np.ndarray:
-        """Create numpy array for the specified or current series.
+    def as_array(self, series: int = 0, resolution: int = 0) -> LazyBioArray:
+        """Return a lazy numpy-compatible array that reads data on-demand.
 
-        Note: the order of the returned array will *always* be `TCZYX[r]`,
-        where `[r]` refers to an optional RGB dimension with size 3 or 4.
-        If the image is RGB it will have `ndim==6`, otherwise `ndim` will be 5.
+        The returned array behaves like a numpy array but reads data from disk
+        only when indexed. Use it just like a numpy array - any indexing operation
+        will read only the requested planes or sub-regions, not the entire dataset.
+
+        Supports integer and slice indexing on all dimensions. The array also
+        implements the `__array__()` protocol for seamless numpy integration.
 
         Parameters
         ----------
         series : int, optional
-            The series index to retrieve, by default None
-        """
-        if self._java_reader is None:
-            raise RuntimeError("File not open - call open() first")
-
-        if series is not None:
-            self._java_reader.setSeries(series)
-
-        nt, nc, nz, ny, nx, nrgb = self.core_meta.shape
-
-        # Create output array with appropriate shape
-        if nrgb > 1:
-            output = np.empty((nt, nc, nz, ny, nx, nrgb), dtype=self.core_meta.dtype)
-        else:
-            output = np.empty((nt, nc, nz, ny, nx), dtype=self.core_meta.dtype)
-
-        # Fill in each plane
-        for t in range(nt):
-            for c in range(nc):
-                for z in range(nz):
-                    plane = self._get_plane(t, c, z)
-                    output[t, c, z] = plane
-
-        return output
-
-    def to_dask(self, series: int | None = None) -> ResourceBackedDaskArray:
-        """Create dask array for the specified or current series.
-
-        Note: the order of the returned array will *always* be `TCZYX[r]`,
-        where `[r]` refers to an optional RGB dimension with size 3 or 4.
-        If the image is RGB it will have `ndim==6`, otherwise `ndim` will be 5.
-
-        The returned object is a `ResourceBackedDaskArray`, which is a wrapper on
-        a dask array that ensures the file is open when actually reading (computing)
-        a chunk.  It has all the methods and behavior of a dask array.
-        See: https://github.com/tlambert03/resource-backed-dask-array
+            Series index, by default 0
+        resolution : int, optional
+            Resolution level (0 = full resolution), by default 0
 
         Returns
         -------
-        ResourceBackedDaskArray
-        """
-        try:
-            import dask.array as da
-            from resource_backed_dask_array import resource_backed_dask_array
-        except ImportError as e:
-            raise ImportError(
-                "Dask and resource-backed-dask-array are required for to_dask(). "
-                "Please install with `pip install bffile[dask]`"
-            ) from e
+        LazyBioArray
+            Lazy array in (T, C, Z, Y, X) or (T, C, Z, Y, X, rgb) format
 
+        Examples
+        --------
+        Index like a numpy array - only reads what you request:
+
+        >>> with BioFile("image.nd2") as bf:
+        ...     arr = bf.as_array()  # No data read yet
+        ...
+        ...     # Read single plane (t=0, c=0, z=2)
+        ...     plane = arr[0, 0, 2]  # Only this plane read from disk
+        ...
+        ...     # Read all timepoints for one channel/z
+        ...     timeseries = arr[:, 0, 2]  # Reads T planes
+        ...
+        ...     # Read sub-region across entire volume
+        ...     roi = arr[:, :, :, 100:200, 50:150]  # Reads 100x50 sub-regions
+        ...
+        ...     # Materialize entire dataset (two equivalent ways)
+        ...     full_data = arr[:]  # Using slice notation
+        ...     full_data = np.array(arr)  # Using numpy conversion
+
+        Notes
+        -----
+        BioFile must remain open while using the array. Multiple arrays can
+        coexist, each reading from their own series independently.
+        """
         if self._java_reader is None:
             raise RuntimeError("File not open - call open() first")
 
-        if series is not None:
-            self._java_reader.setSeries(series)
+        from bffile._lazy_array import LazyBioArray
 
-        nt, nc, nz, ny, nx, nrgb = self.core_meta.shape
+        return LazyBioArray(self, series, resolution)
 
-        if self.dask_tiles:
-            chunks = _utils.get_dask_tile_chunks(nt, nc, nz, ny, nx, self.tile_size)
-        else:
-            chunks = ((1,) * nt, (1,) * nc, (1,) * nz, (ny,), (nx,))
+    def to_dask(
+        self,
+        series: int = 0,
+        resolution: int = 0,
+        chunks: str | tuple = "auto",
+        tile_size: tuple[int, int] | str | None = None,
+    ) -> dask.array.Array:
+        """Create dask array for lazy computation on Bio-Formats data.
 
-        if nrgb > 1:
-            chunks = (*chunks, nrgb)  # type: ignore[assignment]
+        Returns a dask array in TCZYX[r] order that wraps a LazyBioArray.
+        Uses single-threaded scheduler by default for Bio-Formats thread safety.
 
-        arr = da.map_blocks(
-            self._dask_chunk,
-            chunks=chunks,
-            dtype=self.core_meta.dtype,
-        )
-        return resource_backed_dask_array(arr, self)
+        Parameters
+        ----------
+        series : int, optional
+            Series index to read from, by default 0
+        resolution : int, optional
+            Resolution level (0 = full resolution), by default 0
+        chunks : str or tuple, default "auto"
+            Chunk specification. Examples:
+            - "auto": Let dask decide (default)
+            - (1, 1, 1, -1, -1): Full Y,X planes per T,C,Z
+            - (1, 1, 1, 512, 512): 512x512 tiles
+            Mutually exclusive with tile_size.
+        tile_size : tuple[int, int] or "auto", optional
+            Tile-based chunking for Y,X dimensions (T,C,Z get chunks of 1).
+            - (512, 512): Use 512x512 tiles
+            - "auto": Query Bio-Formats optimal tile size
+            Mutually exclusive with chunks.
+
+        Returns
+        -------
+        dask.array.Array
+            Dask array that reads data on-demand. Shape is (T, C, Z, Y, X) or
+            (T, C, Z, Y, X, rgb) for RGB images.
+
+        Raises
+        ------
+        ValueError
+            If both chunks and tile_size are specified
+
+        Examples
+        --------
+        >>> with BioFile("image.nd2") as bf:
+        ...     darr = bf.to_dask(chunks=(1, 1, 1, -1, -1))
+        ...     result = darr.mean(axis=2).compute()  # Z-projection
+
+        Notes
+        -----
+        - BioFile must remain open during computation
+        - Uses synchronous scheduler by default (required for thread safety)
+        """
+        try:
+            import dask.array as da
+        except ImportError as e:
+            raise ImportError(
+                "Dask is required for to_dask(). "
+                "Please install with `pip install bffile[dask]`"
+            ) from e
+
+        # Validate mutually exclusive parameters
+        if tile_size is not None and chunks != "auto":
+            raise ValueError(
+                "chunks and tile_size are mutually exclusive. "
+                "When using tile_size, leave chunks as 'auto' (default)."
+            )
+
+        # Compute chunks from tile_size if provided
+        if tile_size is not None:
+            # Validate tile_size format
+            if tile_size == "auto":
+                # Query Bio-Formats for optimal tile size
+                reader = self.java_reader()
+                reader.setSeries(series)
+                reader.setResolution(resolution)
+                tile_size = (
+                    reader.getOptimalTileHeight(),
+                    reader.getOptimalTileWidth(),
+                )
+            elif not (
+                isinstance(tile_size, tuple)
+                and len(tile_size) == 2
+                and all(isinstance(x, int) for x in tile_size)
+            ):
+                raise ValueError(
+                    f"tile_size must be a tuple of two integers or 'auto', "
+                    f"got {tile_size}"
+                )
+
+            # Compute chunks based on tile size
+            meta = self.core_meta(series, resolution)
+            nt, nc, nz, ny, nx, nrgb = meta.shape
+            chunks = _utils.get_dask_tile_chunks(nt, nc, nz, ny, nx, tile_size)
+            if nrgb > 1:
+                chunks = (*chunks, nrgb)  # type: ignore[assignment]
+
+        lazy_arr = self.as_array(series=series, resolution=resolution)
+        return da.from_array(lazy_arr, chunks=chunks)  # type: ignore
 
     @property
     def closed(self) -> bool:
@@ -398,7 +446,7 @@ class BioFile:
     @property
     def ome_metadata(self) -> OME:
         """Return OME object parsed by ome_types."""
-        if not (omx_xml := self.ome_xml):
+        if not (omx_xml := self.ome_xml):  # pragma: no cover (not sure if possible)
             return OME()
         xml = _utils.clean_ome_xml_for_known_issues(omx_xml)
         return OME.from_xml(xml)
@@ -412,101 +460,137 @@ class BioFile:
         """Exit context manager - ensures file is closed."""
         self.close()  # Idempotent, so safe to call
 
-    def _get_plane(
+    def read_plane(
         self,
         t: int = 0,
         c: int = 0,
         z: int = 0,
         y: slice | None = None,
         x: slice | None = None,
+        series: int = 0,
+        resolution: int = 0,
+        buffer: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Load bytes from a single plane.
+        """Read a single plane or sub-region directly from Bio-Formats.
 
-        The file must be open before calling this method.
+        Low-level method wrapping Bio-Formats' `openBytes()` API. Provides
+        fine-grained control for reading specific planes or rectangular
+        sub-regions. Most users should use `as_array()` or `to_dask()` instead.
+
+        **Not thread-safe.** Create separate BioFile instances per thread.
 
         Parameters
         ----------
         t : int, optional
-            the time index, by default 0
+            Time index, by default 0
         c : int, optional
-            the channel index, by default 0
+            Channel index, by default 0
         z : int, optional
-            the z index, by default 0
+            Z-slice index, by default 0
         y : slice, optional
-            a slice object to select a Y subset of the plane, by default: full axis.
+            Y-axis slice (default: full height). Example: `slice(100, 200)`
         x : slice, optional
-            a slice object to select a X subset of the plane, by default: full axis.
+            X-axis slice (default: full width). Example: `slice(50, 150)`
+        series : int, optional
+            Series index, by default 0
+        resolution : int, optional
+            Resolution level (0 = full resolution), by default 0
+        buffer : np.ndarray, optional
+            Pre-allocated buffer for efficient reuse in loops
 
         Returns
         -------
         np.ndarray
-            array of requested bytes.
+            Shape (height, width) for grayscale or (height, width, rgb) for RGB
 
-        Raises
-        ------
-        RuntimeError
-            If file is not open
+        Examples
+        --------
+        >>> with BioFile("image.nd2") as bf:
+        ...     plane = bf.read_plane(t=0, c=1, z=5)
+        ...     roi = bf.read_plane(y=slice(200, 300), x=slice(200, 300))
+
+        See Also
+        --------
+        as_array : Create a numpy-compatible lazy array
+        to_dask : Create a dask array for lazy loading
         """
-        with self._lock:
-            # Don't auto-reopen - require explicit open
-            if self.closed:
-                raise RuntimeError(
-                    "Cannot read from closed file. "
-                    "Call open() first or use a context manager: "
-                    "with BioFile(...) as bf:"
-                )
+        reader = self.java_reader()
+        reader.setSeries(series)
+        reader.setResolution(resolution)
 
-            if self._java_reader is None or self._core_meta_list is None:
-                raise RuntimeError(
-                    "Metadata not initialized - file may not be properly opened"
-                )
+        # Get metadata for this series/resolution
+        meta = self.core_meta(series, resolution)
+        shape = meta.shape
 
-            shape = self.core_meta.shape
+        # Handle default slices
+        y = y if y is not None else slice(0, shape.y)
+        x = x if x is not None else slice(0, shape.x)
 
-            y = y if y is not None else slice(0, shape.y)
-            x = x if x is not None else slice(0, shape.x)
+        # Call optimized internal method
+        im = self._read_plane(reader, meta, t, c, z, y, x)
 
-            # get bytes from bioformats
-            idx = self._java_reader.getIndex(z, c, t)
-            ystart, ywidth = _utils.slice2width(y, shape.y)
-            xstart, xwidth = _utils.slice2width(x, shape.x)
-            # read bytes using bioformats
-            buffer = self._java_reader.openBytes(idx, xstart, ystart, xwidth, ywidth)
-            # convert buffer to numpy array
-            im = np.frombuffer(bytes(buffer), self.core_meta.dtype)
-
-            # reshape
-            if shape.rgb > 1:
-                if self.core_meta.is_interleaved:
-                    im.shape = (ywidth, xwidth, shape.rgb)
-                else:
-                    im.shape = (shape.rgb, ywidth, xwidth)
-                    im = np.transpose(im, (1, 2, 0))
-            else:
-                im.shape = (ywidth, xwidth)
+        # If buffer provided, copy into it (for reuse in loops)
+        if buffer is not None:
+            buffer[:] = im
+            return buffer
 
         return im
 
-    def _dask_chunk(self, block_id: tuple[int, ...]) -> np.ndarray:
-        """Retrieve `block_id` from array.
-
-        This function is for map_blocks (called in `to_dask`).
-        If someone indexes a 5D dask array as `arr[0, 1, 2]`, then 'block_id'
-        will be (0, 1, 2, 0, 0)
+    def _read_plane(
+        self,
+        reader: IFormatReader,
+        meta: CoreMetadata,
+        t: int,
+        c: int,
+        z: int,
+        y: slice,
+        x: slice,
+    ) -> np.ndarray:
         """
-        # Our convention is that the final dask array is in the order TCZYX, so
-        # block_id will be coming in as (T, C, Z, Y, X).
-        t, c, z, y, x, *_ = block_id
+        Fast plane reading for hot path (internal use only).
 
-        if self.dask_tiles:
-            *_, ny, nx, _ = self.core_meta.shape
-            y_slice = _utils.axis_id_to_slice(y, self.tile_size[0], ny)
-            x_slice = _utils.axis_id_to_slice(x, self.tile_size[1], nx)
-            im = self._get_plane(t, c, z, y_slice, x_slice)
+        This method skips all validation, metadata lookups, and series/resolution
+        setting, assuming they've been done once before entering a tight loop.
+
+        Parameters
+        ----------
+        reader : IFormatReader
+            Java reader (already set to correct series/resolution)
+        meta : CoreMetadata
+            Metadata for current series/resolution (avoid repeated lookups)
+        t, c, z : int
+            Plane coordinates
+        y, x : slice
+            Sub-region slices (not None)
+
+        Returns
+        -------
+        np.ndarray
+            Plane data as 2D or 3D array
+        """
+        shape = meta.shape
+
+        # Get bytes from bioformats
+        idx = reader.getIndex(z, c, t)
+        ystart, ywidth = _utils.slice2width(y, shape.y)
+        xstart, xwidth = _utils.slice2width(x, shape.x)
+
+        # Read bytes using bioformats
+        java_buffer = reader.openBytes(idx, xstart, ystart, xwidth, ywidth)
+        # Convert buffer to numpy array (zero-copy via memoryview)
+        im = np.frombuffer(memoryview(java_buffer), meta.dtype)  # type: ignore
+
+        # Reshape
+        if shape.rgb > 1:
+            if meta.is_interleaved:
+                im.shape = (ywidth, xwidth, shape.rgb)
+            else:
+                im.shape = (shape.rgb, ywidth, xwidth)
+                im = np.transpose(im, (1, 2, 0))
         else:
-            im = self._get_plane(t, c, z)
+            im.shape = (ywidth, xwidth)
 
-        return im[np.newaxis, np.newaxis, np.newaxis]
+        return im
 
     _service: ClassVar[Any] = None
 
@@ -603,9 +687,8 @@ def _close_java_reader(java_reader: IFormatReader | None) -> None:
 
     For explicit cleanup, use the BioFile.close() method instead.
     """
-    if java_reader is None:
-        return
     # Only attempt close during normal operation (not shutdown)
-    if not sys.is_finalizing() and jpype.isJVMStarted():
-        with suppress(Exception):
-            java_reader.close()
+    if java_reader is None or sys.is_finalizing() or not jpype.isJVMStarted():
+        return  # pragma: no cover
+    with suppress(Exception):
+        java_reader.close()

@@ -1,0 +1,242 @@
+"""Test LazyBioArray indexing and numpy protocol."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import numpy as np
+import pytest
+
+from bffile import BioFile
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+@pytest.mark.parametrize(
+    "indexing,squeezed_dims",
+    [
+        (np.s_[0, 0, 0], 3),  # Squeeze T, C, Z
+        (np.s_[:], 0),  # No squeezing
+        (np.s_[:2, 1:, 0:3], 0),  # No squeezing
+        (np.s_[-1, -1, -1], 3),  # Squeeze T, C, Z
+        (np.s_[..., 100:200], 0),  # No squeezing (ellipsis)
+    ],
+)
+def test_indexing_patterns(
+    opened_biofile: BioFile, indexing: tuple, squeezed_dims: int
+) -> None:
+    arr = opened_biofile.as_array()
+    result = arr[indexing]
+    expected_ndim = arr.ndim - squeezed_dims
+    assert result.ndim == expected_ndim
+
+
+def test_xy_subregion(opened_biofile: BioFile) -> None:
+    arr = opened_biofile.as_array()
+    meta = opened_biofile.core_meta()
+    nt, nc, nz, ny, nx = meta.shape[:5]
+
+    # Only test subregion if image is large enough
+    if ny < 10 or nx < 10:
+        pytest.skip("Image too small for subregion test")
+
+    subregion = arr[:, :, :, 5:10, 5:10]
+    expected_shape = (nt, nc, nz, 5, 5)
+    if arr.is_rgb:
+        expected_shape = (*expected_shape, meta.shape[5])
+    assert subregion.shape == expected_shape
+
+
+def test_mixed_indexing(opened_biofile: BioFile) -> None:
+    arr = opened_biofile.as_array()
+    result = arr[0, :, 0, :, :]
+    # Squeezed T and Z, kept C, Y, X (and RGB if present)
+    expected_ndim = arr.ndim - 2
+    assert result.ndim == expected_ndim
+
+
+def test_numpy_array_conversion(opened_biofile: BioFile) -> None:
+    arr = opened_biofile.as_array()
+    np_arr = np.array(arr)
+    assert isinstance(np_arr, np.ndarray)
+    assert np_arr.shape == arr.shape
+    assert np_arr.dtype == arr.dtype
+
+
+def test_numpy_operations(opened_biofile: BioFile) -> None:
+    arr = opened_biofile.as_array()
+    max_proj = np.max(arr, axis=2)
+    assert max_proj.ndim == arr.ndim - 1
+
+
+def test_fancy_indexing_not_supported(opened_biofile: BioFile) -> None:
+    arr = opened_biofile.as_array()
+    with pytest.raises(NotImplementedError, match="fancy indexing"):
+        arr[[0, 1, 2]]
+
+    with pytest.raises(NotImplementedError, match="fancy indexing"):
+        arr[np.array([0, 1, 2])]
+
+
+def test_step_not_supported(opened_biofile: BioFile) -> None:
+    arr = opened_biofile.as_array()
+    with pytest.raises(NotImplementedError, match="step != 1"):
+        arr[::2]
+
+
+def test_empty_slice(opened_biofile: BioFile) -> None:
+    arr = opened_biofile.as_array()
+    result = arr[0:0, :, :]
+    assert result.shape[0] == 0
+
+
+def test_index_out_of_bounds(opened_biofile: BioFile) -> None:
+    arr = opened_biofile.as_array()
+    with pytest.raises(IndexError):
+        arr[1000, 0, 0]
+
+
+def test_shape_dtype_ndim_properties(simple_file: Path) -> None:
+    with BioFile(simple_file) as bf:
+        arr = bf.as_array()
+        assert isinstance(arr.shape, tuple)
+        assert isinstance(arr.dtype, np.dtype)
+        assert isinstance(arr.ndim, int)
+        assert arr.ndim == len(arr.shape)
+
+
+def test_repr(simple_file: Path) -> None:
+    with BioFile(simple_file) as bf:
+        arr = bf.as_array()
+        repr_str = repr(arr)
+        assert "LazyBioArray" in repr_str
+        assert "shape=" in repr_str
+        assert "dtype=" in repr_str
+
+
+def test_conditional_dimension_slicing(opened_biofile: BioFile) -> None:
+    """Test slicing along dimensions that exist."""
+    arr = opened_biofile.as_array()
+    meta = opened_biofile.core_meta()
+    nt, nc, nz = meta.shape.t, meta.shape.c, meta.shape.z
+
+    # Only test multi-timepoint slicing if nt > 1
+    if nt > 1:
+        result = arr[:2, 0, 0]
+        assert result.shape[0] == 2
+
+    # Only test multi-channel slicing if nc > 1
+    if nc > 1:
+        result = arr[0, :, 0]
+        assert result.shape[0] == nc
+
+    # Only test multi-z slicing if nz > 1
+    if nz > 1:
+        result = arr[0, 0, :]
+        assert result.shape[0] == nz
+
+
+def test_partial_key_indexing(opened_biofile: BioFile) -> None:
+    """Test indexing with fewer dimensions than array has."""
+    arr = opened_biofile.as_array()
+
+    # Should implicitly add full slices for missing dimensions
+    result = arr[0]
+    expected_ndim = arr.ndim - 1
+    assert result.ndim == expected_ndim
+
+
+def test_dimension_squeezing(opened_biofile: BioFile) -> None:
+    """Test that integer indexing properly squeezes dimensions."""
+    arr = opened_biofile.as_array()
+
+    if arr.is_rgb:
+        # 6D → 3D by fixing T, C, Z (leaves Y, X, RGB)
+        plane = arr[0, 0, 0]
+        assert plane.ndim == 3
+        assert plane.shape[-1] in (3, 4)  # RGB or RGBA
+    else:
+        # 5D → 2D by fixing T, C, Z (leaves Y, X)
+        plane = arr[0, 0, 0]
+        assert plane.ndim == 2
+
+
+def test_lazy_vs_numpy_single_plane(opened_biofile: BioFile) -> None:
+    """Verify lazy array returns same data as direct numpy conversion."""
+    arr = opened_biofile.as_array()
+    meta = opened_biofile.core_meta()
+
+    # Use lower resolution for pyramid files to avoid 2GB limit
+    if meta.resolution_count > 1:
+        arr = opened_biofile.as_array(resolution=1)
+
+    # Skip if plane would be too large (>100MB to keep test fast)
+    frame_size = meta.shape.y * meta.shape.x * meta.shape.rgb
+    plane_size_mb = (frame_size * meta.dtype.itemsize) / (1024 * 1024)
+    if plane_size_mb > 100:
+        pytest.skip("Plane too large for fast correctness test")
+
+    # Get ground truth via full materialization
+    numpy_data = np.asarray(arr)
+
+    # Test single plane
+    lazy_plane = arr[0, 0, 0]
+    numpy_plane = numpy_data[0, 0, 0]
+
+    assert np.array_equal(lazy_plane, numpy_plane)
+
+
+def test_lazy_vs_numpy_subregion(opened_biofile: BioFile) -> None:
+    """Verify subregion reads match numpy."""
+    arr = opened_biofile.as_array()
+    meta = opened_biofile.core_meta()
+    ny, nx = meta.shape.y, meta.shape.x
+
+    # Skip if image too small or too large
+    if ny < 20 or nx < 20:
+        pytest.skip("Image too small for subregion test")
+
+    plane_size_mb = (ny * nx * meta.shape.rgb * meta.dtype.itemsize) / (1024 * 1024)
+    if plane_size_mb > 100:
+        pytest.skip("Plane too large for fast correctness test")
+
+    # Get ground truth
+    numpy_data = np.asarray(arr)
+
+    # Test subregion (center 10x10 pixels)
+    y_mid, x_mid = ny // 2, nx // 2
+    y_slice = slice(y_mid - 5, y_mid + 5)
+    x_slice = slice(x_mid - 5, x_mid + 5)
+
+    lazy_roi = arr[0, 0, 0, y_slice, x_slice]
+    numpy_roi = numpy_data[0, 0, 0, y_slice, x_slice]
+
+    assert np.array_equal(lazy_roi, numpy_roi)
+
+
+def test_multi_series_independence(multiseries_file) -> None:
+    """Critical: Verify interleaved reads from multiple series don't corrupt data."""
+    with BioFile(multiseries_file) as bf:
+        # Get ground truth for both series
+        truth_s0 = np.asarray(bf.as_array(series=0))
+        truth_s1 = np.asarray(bf.as_array(series=1))
+
+        # Create lazy arrays
+        arr0 = bf.as_array(series=0)
+        arr1 = bf.as_array(series=1)
+
+        # Read from series 0
+        lazy_s0_first = arr0[0, 0, 0]
+
+        # Read from series 1 (could potentially corrupt arr0's state)
+        lazy_s1 = arr1[0, 0, 0]
+
+        # Read from series 0 again - should still be correct
+        lazy_s0_second = arr0[0, 0, 0]
+
+        # Verify correctness
+        assert np.array_equal(lazy_s0_first, truth_s0[0, 0, 0])
+        assert np.array_equal(lazy_s1, truth_s1[0, 0, 0])
+        assert np.array_equal(lazy_s0_second, truth_s0[0, 0, 0])
+        assert np.array_equal(lazy_s0_first, lazy_s0_second)

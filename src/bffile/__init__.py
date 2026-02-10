@@ -4,9 +4,11 @@ from importlib.metadata import PackageNotFoundError, version
 
 try:
     __version__ = version("bffile")
-except PackageNotFoundError:
+except PackageNotFoundError:  # pragma: no cover
     __version__ = "uninstalled"
 
 from ._biofile import BioFile
+from ._imread import imread
+from ._lazy_array import LazyBioArray
 
-__all__ = ["BioFile"]
+__all__ = ["BioFile", "LazyBioArray", "imread"]

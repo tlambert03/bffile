@@ -2,30 +2,20 @@ from __future__ import annotations
 
 import logging
 import re
+import warnings
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 from xml.etree import ElementTree as ET
 
 import numpy as np
 
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-    from ome_types import OME
-
-
 log = logging.getLogger("bffile")
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from typing import Any
 
-class PhysicalPixelSizes(NamedTuple):
-    """NamedTuple with physical pixel sizes."""
-
-    z: float | None
-    y: float | None
-    x: float | None
-
-    def __repr__(self) -> str:
-        return f"PhysicalPixelSizes(z={self.z}, y={self.y}, x={self.x})"
+    from ome_types import OME
 
 
 class OMEShape(NamedTuple):
@@ -134,14 +124,41 @@ def get_coords_from_ome(
     return coords
 
 
-def clean_ome_xml_for_known_issues(xml: str) -> str:
+def generate_coord_array(
+    start: int | float, stop: int | float, step_size: int | float
+) -> np.ndarray:
     """
-    Clean an OME XML string for known issues created by AICS or MicroManager
-    systems and tools.
+    Generate an np.ndarray for coordinate values.
 
-    Commonly this is used for cleaning a file produced by AICS prior to noticing the
-    issue (2021), or for other users of aicsimageio as a whole prior to 4.x series of
-    releases.
+    Parameters
+    ----------
+    start: Union[int, float]
+        The start value.
+    stop: Union[int, float]
+        The stop value.
+    step_size: Union[int, float]
+        How large each step should be.
+
+    Returns
+    -------
+    coords: np.ndarray
+        The coordinate array.
+
+    Notes
+    -----
+    In general, we have learned that floating point math is hard....
+    This block of code used to use `np.arange` with floats as parameters and
+    it was causing errors. To solve, we generate the range with ints and then
+    multiply by a float across the entire range to get the proper coords.
+    See: https://github.com/AllenCellModeling/aicsimageio/issues/249
+    """
+    return np.arange(start, stop) * step_size
+
+
+def clean_ome_xml_for_known_issues(xml: str) -> str:
+    """Clean OME XML string for known issues seen in the wild.
+
+    Particularly, files created by AICS or MicroManager
 
     The result of this function should be an OME XML string that is relatively the
     same (no major pieces missing) but that validates against the reference OME
@@ -175,8 +192,14 @@ def clean_ome_xml_for_known_issues(xml: str) -> str:
     namespace_matches = re.match(r"\{.*\}", root.tag)
     if namespace_matches is not None:
         namespace = namespace_matches.group(0)
-    else:
-        raise ValueError("XML does not contain a namespace")
+    else:  # pragma: no cover
+        warnings.warn(
+            "XML does not contain a namespace, "
+            "please report this issue with the file that caused it.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return xml
 
     # Fix MicroManager Instrument and Detector
     ome_instrument_id = ""
@@ -435,6 +458,17 @@ def clean_ome_xml_for_known_issues(xml: str) -> str:
     return xml
 
 
+class PhysicalPixelSizes(NamedTuple):
+    """NamedTuple with physical pixel sizes."""
+
+    z: float | None
+    y: float | None
+    x: float | None
+
+    def __repr__(self) -> str:
+        return f"PhysicalPixelSizes(z={self.z}, y={self.y}, x={self.x})"
+
+
 def physical_pixel_sizes(ome: OME, scene: int = 0) -> PhysicalPixelSizes:
     """
     Returns
@@ -533,37 +567,6 @@ def generate_ome_detector_id(detector_id: str | int) -> str:
         The OME standard for detector IDs.
     """
     return f"Detector:{detector_id}"
-
-
-def generate_coord_array(
-    start: int | float, stop: int | float, step_size: int | float
-) -> np.ndarray:
-    """
-    Generate an np.ndarray for coordinate values.
-
-    Parameters
-    ----------
-    start: Union[int, float]
-        The start value.
-    stop: Union[int, float]
-        The stop value.
-    step_size: Union[int, float]
-        How large each step should be.
-
-    Returns
-    -------
-    coords: np.ndarray
-        The coordinate array.
-
-    Notes
-    -----
-    In general, we have learned that floating point math is hard....
-    This block of code used to use `np.arange` with floats as parameters and
-    it was causing errors. To solve, we generate the range with ints and then
-    multiply by a float across the entire range to get the proper coords.
-    See: https://github.com/AllenCellModeling/aicsimageio/issues/249
-    """
-    return np.arange(start, stop) * step_size
 
 
 def _chunk_by_tile_size(n_px: int, tile_length: int) -> tuple[int, ...]:
