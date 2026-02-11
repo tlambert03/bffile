@@ -4,12 +4,13 @@ import os
 import sys
 import warnings
 import weakref
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast, overload
 
 import jpype
 import numpy as np
@@ -17,11 +18,15 @@ from ome_types import OME
 from typing_extensions import Self
 
 from bffile._core_metadata import CoreMetadata
+from bffile._series import Series
 
 from . import _utils
+from ._java_stuff import jtype_to_python
 from ._jimports import jimport
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import dask.array
     import java.lang
     from loci.formats import IFormatReader
@@ -75,7 +80,7 @@ if _max_bytes := os.getenv("BIOFORMATS_MAX_JAVA_BYTES"):  # pragma: no cover
         )
 
 
-class BioFile:
+class BioFile(Sequence[Series]):
     """Read image and metadata from file supported by Bioformats.
 
     BioFile instances must be explicitly opened before use, either by:
@@ -168,7 +173,7 @@ class BioFile:
             i += resolution_count
         return result
 
-    def core_meta(self, series: int = 0, resolution: int = 0) -> CoreMetadata:
+    def core_metadata(self, series: int = 0, resolution: int = 0) -> CoreMetadata:
         """Get metadata for specified series and resolution.
 
         Parameters
@@ -209,6 +214,28 @@ class BioFile:
                 f"resolution levels)"
             )
         return self._core_meta_list[series][resolution]
+
+    def global_metadata(self) -> Mapping[str, Any]:
+        """Return the global metadata as a dictionary.
+
+        This includes all metadata that is not specific to a particular series or
+        resolution. The exact contents will depend on the file and reader, but may
+        include things like instrument information, acquisition settings, and other
+        annotations.
+
+        Returns
+        -------
+        Mapping[str, Any]
+            Global metadata key-value pairs
+
+        Raises
+        ------
+        RuntimeError
+            If file is not open
+        """
+        reader = self.java_reader()
+        meta = reader.getGlobalMetadata()
+        return {str(k): jtype_to_python(v) for k, v in meta.items()}
 
     def open(self) -> None:
         """Open file and initialize reader.
@@ -423,7 +450,7 @@ class BioFile:
                 )
 
             # Compute chunks based on tile size
-            meta = self.core_meta(series, resolution)
+            meta = self.core_metadata(series, resolution)
             nt, nc, nz, ny, nx, nrgb = meta.shape
             chunks = _utils.get_dask_tile_chunks(nt, nc, nz, ny, nx, tile_size)
             if nrgb > 1:
@@ -476,6 +503,115 @@ class BioFile:
     def __exit__(self, *_args: Any) -> None:
         """Exit context manager - ensures file is closed."""
         self.close()  # Idempotent, so safe to call
+
+    def __len__(self) -> int:
+        """Return the number of series in the file."""
+        if self._core_meta_list is None:
+            raise RuntimeError("File not open - call open() first")
+        return len(self._core_meta_list)
+
+    def series_count(self) -> int:
+        """Return the number of series in the file (same as `len(bf)`)."""
+        return len(self)
+
+    @overload
+    def __getitem__(self, index: int) -> Series: ...
+    @overload
+    def __getitem__(self, index: slice) -> list[Series]: ...
+    def __getitem__(self, index: int | slice) -> Series | list[Series]:
+        """Return a [`Series`][bffile.Series] proxy for the given index.
+
+        Parameters
+        ----------
+        index : int | slice
+            Series index or slice of series indices to retrieve
+        """
+        if isinstance(index, int):
+            return self._get_series(index)
+        elif isinstance(index, slice):
+            return [self._get_series(i) for i in range(*index.indices(len(self)))]
+        raise TypeError(f"Invalid index type: {type(index)}")  # pragma: no cover
+
+    def _get_series(self, index: int) -> Series:
+        """Internal method to get a Series with index validation."""
+        n = len(self)  # also validates open state
+        if index < 0:
+            index += n
+        if index < 0 or index >= n:
+            raise IndexError(f"Series index {index} out of range (file has {n} series)")
+        from bffile._series import Series
+
+        return Series(self, index)
+
+    def used_files(self, *, metadata_only: bool = False) -> list[str]:
+        """Return complete list of files needed to open this dataset.
+
+        Parameters
+        ----------
+        metadata_only : bool, optional
+            If True, only return files that do not contain pixel data (e.g., metadata,
+            companion files, etc...), by default `False`.
+        """
+        return [str(x) for x in self.java_reader().getUsedFiles(metadata_only) or ()]
+
+    def lookup_table(self, series: int = 0) -> np.ndarray | None:
+        """Return the color lookup table for an indexed-color series.
+
+        Parameters
+        ----------
+        series : int, optional
+            Series index, by default 0.
+
+        Returns
+        -------
+        np.ndarray | None
+            Array of shape `(N, 3)` with RGB values for each pixel index,
+            or None if the series is not indexed.
+
+        Examples
+        --------
+
+        To convert this object to a [`cmap.Colormap`][]:
+
+        ```python
+        import cmap
+        from bffile import BioFile
+
+        with BioFile("indexed_image.ome.tiff") as bf:
+            lut = bf.lookup_table()
+            if lut is not None:
+                colormap = cmap.Colormap(lut / lut.max())  # Normalize to [0, 1]
+        ```
+        """
+        # `is_indexed` is a bit of a misnomer here (but bioformats uses it)
+        # it really means "a LUT exists", not "the image is palette-based"
+        #   - True palette images (GIF, indexed PNG) → is_indexed=True, is_rgb=False
+        #   - Fluorescence with display LUT (ND2, CZI) → is_indexed=True, is_rgb=False
+        #   - Plain grayscale (basic TIFF, no LUT) → is_indexed=False, is_rgb=False
+        #   - RGB images → is_indexed=False, is_rgb=True
+        if not self.core_metadata(series).is_indexed:
+            return None
+
+        reader = self.java_reader()
+        reader.setSeries(series)
+        # Many readers require at least one openBytes call before LUT is available
+        reader.openBytes(0, 0, 0, 1, 1)
+        if (lut := reader.get16BitLookupTable()) is not None:
+            return np.asarray(lut, dtype=np.uint16).T
+        if (lut := reader.get8BitLookupTable()) is not None:
+            return np.asarray(lut, dtype=np.uint8).T
+        return None
+
+    def __iter__(self) -> Iterator[Series]:
+        """Iterate over all series in the file."""
+        for i in range(len(self)):
+            yield self[i]
+
+    def __repr__(self) -> str:
+        name = Path(self._path).name
+        if self.closed:
+            return f"BioFile('{name}', closed)"
+        return f"BioFile('{name}', {len(self)} series)"
 
     def read_plane(
         self,
@@ -536,7 +672,7 @@ class BioFile:
         reader.setResolution(resolution)
 
         # Get metadata for this series/resolution
-        meta = self.core_meta(series, resolution)
+        meta = self.core_metadata(series, resolution)
         shape = meta.shape
 
         # Handle default slices

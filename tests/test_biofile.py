@@ -49,7 +49,7 @@ def test_operations_require_open(simple_file: Path) -> None:
     bf = BioFile(simple_file)
 
     with pytest.raises(RuntimeError, match="File not open"):
-        bf.core_meta()
+        bf.core_metadata()
 
     with pytest.raises(RuntimeError, match="File not open"):
         bf.as_array()
@@ -64,17 +64,17 @@ def test_operations_require_open(simple_file: Path) -> None:
 def test_reopen_after_close(simple_file: Path) -> None:
     bf = BioFile(simple_file)
     bf.open()
-    meta1 = bf.core_meta()
+    meta1 = bf.core_metadata()
     bf.close()
 
     bf.open()
-    meta2 = bf.core_meta()
+    meta2 = bf.core_metadata()
     assert meta1.shape == meta2.shape
     bf.close()
 
 
 def test_core_meta_returns_metadata(opened_biofile: BioFile) -> None:
-    meta = opened_biofile.core_meta()
+    meta = opened_biofile.core_metadata()
     assert hasattr(meta, "shape")
     assert hasattr(meta, "dtype")
     assert hasattr(meta, "dimension_order")
@@ -136,7 +136,7 @@ def test_bioformats_maven_coordinate() -> None:
 
 
 def test_read_plane_subregion(opened_biofile: BioFile) -> None:
-    meta = opened_biofile.core_meta()
+    meta = opened_biofile.core_metadata()
     ny, nx = meta.shape.y, meta.shape.x
 
     # Only test subregion if image is large enough
@@ -157,7 +157,7 @@ def test_as_array_with_series_resolution(multiseries_file: Path) -> None:
 def test_core_meta_resolution_bounds(pyramid_file: Path) -> None:
     with BioFile(pyramid_file) as bf:
         with pytest.raises(IndexError, match="out of range"):
-            bf.core_meta(series=0, resolution=100)
+            bf.core_metadata(series=0, resolution=100)
 
 
 def test_biofile_with_meta_disabled(simple_file: Path) -> None:
@@ -176,3 +176,34 @@ def test_imread(simple_file: Path) -> None:
     arr = imread(simple_file)
     assert isinstance(arr, np.ndarray)
     assert arr.ndim == 5
+
+
+def test_global_metadata(multiseries_file: Path) -> None:
+    with BioFile(multiseries_file) as bf:
+        meta = bf.global_metadata()
+        assert isinstance(meta, dict)
+        assert meta
+
+
+def test_used_files(any_file: Path) -> None:
+    with BioFile(any_file) as bf:
+        # Test both with and without metadata_only flag
+        files = bf.used_files()
+        assert files
+        assert any(bf.filename in f for f in files)
+
+        meta_files = bf.used_files(metadata_only=True)
+        assert isinstance(meta_files, list)
+
+
+def test_lookup_table(any_file: Path) -> None:
+    """Test lookup_table method for various file types."""
+    with BioFile(any_file) as bf:
+        for series in range(len(bf)):
+            lut = bf.lookup_table(series=series)
+            if lut is not None:
+                assert isinstance(lut, np.ndarray)
+                assert lut.ndim == 2
+                assert lut.shape[0] >= 1  # At least one channel
+                assert lut.shape[1] >= 1  # At least one value
+                assert lut.dtype in (np.uint8, np.uint16)
