@@ -62,7 +62,12 @@ def test_uninitialized(simple_file: Path) -> None:
     bf = BioFile(simple_file)
     _assert_uninitialized(bf)
 
-    for method in (bf._ensure_java_reader, bf.read_plane, bf.as_array, bf.core_metadata):
+    for method in (
+        bf._ensure_java_reader,
+        bf.read_plane,
+        bf.as_array,
+        bf.core_metadata,
+    ):
         with pytest.raises(RuntimeError, match="not open"):
             method()  # type: ignore[call-arg]
     with pytest.raises(RuntimeError, match="not open"):
